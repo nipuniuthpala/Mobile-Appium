@@ -1,0 +1,8 @@
+pytest
+Appium-Python-Client
+AltTester-Driver==2.2.6
+allure-pytest
+pytest-order
+pytest-html
+databricks-sql-connector
+requests
