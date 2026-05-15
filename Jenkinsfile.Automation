@@ -1,0 +1,240 @@
+// Jenkinsfile.automation (for the 'Generic-Game-Automation' job)
+
+pipeline {
+    agent { label 'SDK3 || SDK2 || SDK1' } // Runs on the dedicated SDK agent
+
+
+    parameters {
+        string(name: 'GAMENAME', defaultValue: '', description: 'The name of the game being processed')
+        string(name: 'BUILD_TYPE', defaultValue: 'UAT', description: 'Build type: LIVE, DEBUG_LIVE, LIVE_AB, UAT, DEBUG_UAT, DEBUG_UAT_AB')
+        string(name: 'UPSTREAM_BUILD_NUMBER', defaultValue: '', description: 'Build number from the triggering job')
+        string(name: 'UPSTREAM_JOB_NAME', defaultValue: '', description: 'Job name of the triggering job')
+        string(name: 'BRANCH_NAME', defaultValue: '', description: 'Branch name from upstream job')
+        string(name: 'GIT_COMMIT', defaultValue: '', description: 'Git commit from upstream job')
+        string(name: 'COMMITTER_EMAIL', defaultValue: '', description: 'Committer Email from upstream job')
+        string(name: 'BUILD_USER_EMAIL', defaultValue: '', description: 'Build User Email from upstream job')
+        string(name: 'VERSION', defaultValue: '', description: 'Version number from upstream job')
+    }
+
+    options {
+        ansiColor('xterm')
+        timeout(time: 105, unit: 'MINUTES')
+    }
+
+    environment {
+        LAST_STAGE = 'Game Automation Execution'
+    }
+
+    stages {
+        stage('Game Automation') {
+            options {
+                timeout(time: 105, unit: 'MINUTES')
+            }
+            steps {
+                script {
+                    echo "KWStage Game Automation Start for game: ${params.GAMENAME}"
+                    echo "(Triggered by ${params.UPSTREAM_JOB_NAME} #${params.UPSTREAM_BUILD_NUMBER})"
+                    LAST_STAGE = env.STAGE_NAME
+
+                    try {
+                     sh """
+                        export GAMENAME='${params.GAMENAME}'
+                        echo "Executing SdkAutomation script for GAMENAME=\$GAMENAME"
+                        chmod +x /Users/jenkins/KWJenkins/General/game-automation-android.sh
+                        /Users/jenkins/KWJenkins/General/game-automation-android.sh
+                     """
+
+                        def sourceZipPath = "/Volumes/Builds/BuildsTmp/${params.GAMENAME}/queenspuzzle/AutomationReports.zip"
+                        sh "ls -l ${sourceZipPath}"
+
+                    } catch (err) {
+                        currentBuild.result = 'FAILURE'
+                        throw err
+                    }
+                    echo "KWStage Game Automation End for game: ${params.GAMENAME}"
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                 def specificRecipient = ['nipuni.gunatilake@kwalee.com','nidish.narayanan@kwalee.com','yash.mota@kwalee.com','nitheesh.murugadas@kwalee.com','chittoju.keshav@kwalee.com']
+                 def dynamicRecipients = [params.COMMITTER_EMAIL, params.BUILD_USER_EMAIL].findAll { it && it.trim() }.unique()
+                 def allRecipientsList = (dynamicRecipients + specificRecipient).unique()
+                 def recipients = allRecipientsList.join(',')
+
+                 if (!recipients) {
+                     echo "No valid email recipients found for success notification."
+                     return
+                 }
+
+                 def subject = "Test Automation SUCCESS for ${params.GAMENAME} (Upstream Build #${params.UPSTREAM_BUILD_NUMBER}, Version: ${params.VERSION})"
+                 def body = """
+                 <html><body>
+                 <h2>Test Automation execution is completed please analyse the report</h2>
+                 <p>Game: <b>${params.GAMENAME}</b></p>
+                 <p>Version: <b>${params.VERSION}</b></p>
+                 <p>Triggered by: ${params.UPSTREAM_JOB_NAME} #${params.UPSTREAM_BUILD_NUMBER}</p>
+                 <p>Jenkins Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                 <br/>
+                 <p>Automation reports zip file (containing Allure and Surefire reports) is attached.</p>
+                 </body></html>
+                 """
+
+                 def sourceZipPath = "/Volumes/Builds/BuildsTmp/${params.GAMENAME}/queenspuzzle/AutomationReports.zip"
+                 def attachmentFilename = "AutomationReports-${params.GAMENAME}-${params.UPSTREAM_BUILD_NUMBER}.zip"
+                 def workspaceZipPath = "${env.WORKSPACE}/${attachmentFilename}"
+
+                 echo "Attempting to send success email with results to: ${recipients}"
+                 echo "Checking for source attachment at: ${sourceZipPath}"
+
+                 if (fileExists(sourceZipPath)) {
+                     try {
+                         echo "Copying attachment from ${sourceZipPath} to workspace path ${workspaceZipPath}"
+                         sh "cp '${sourceZipPath}' '${workspaceZipPath}'"
+                     } catch (e) {
+                         echo "ERROR: Failed to copy attachment from ${sourceZipPath} to workspace: ${e.message}"
+                         emailext( to: recipients, subject: subject + " (Attachment Copy Failed)", body: body + "<p><b>ERROR:</b> Failed to copy attachment file to workspace. Cannot attach results.</p>", mimeType: 'text/html' )
+                         return
+                     }
+                     try {
+                         emailext(
+                             to: recipients,
+                             subject: subject,
+                             body: body,
+                             mimeType: 'text/html',
+                             attachmentsPattern: attachmentFilename
+                         )
+                         echo "Email sent successfully with attachment."
+                     } catch (e) {
+                         echo "ERROR: Failed to send email: ${e.message}"
+                     } finally {
+                         echo "Removing temporary attachment copy from workspace: ${workspaceZipPath}"
+                         sh "rm -f '${workspaceZipPath}'"
+                     }
+                 } else {
+                     echo "WARN: Automation reports zip not found at ${sourceZipPath}. Sending email without attachment."
+                     emailext( to: recipients, subject: subject + " (Attachment Missing)", body: body + "<p><b>WARNING:</b> Expected attachment file not found at ${sourceZipPath}</p>", mimeType: 'text/html' )
+                 }
+
+                 // Cleanup after email is sent
+                 //def folderPath = "/Volumes/Builds/BuildsTmp/${params.GAMENAME}"
+                 //def oldFolderPath = "${folderPath}_old"
+
+                 //echo "Renaming folder to release lock: ${folderPath}"
+                 //sh """
+                     //if [ -d '${folderPath}' ]; then
+                         //mv '${folderPath}' '${oldFolderPath}'
+                         //rm -rf '${oldFolderPath}'
+                     //else
+                        //echo "Folder does not exist: ${folderPath}"
+                     //fi
+                 //"""
+
+                 //cleanWs()
+
+                // Cleanup after email is sent
+                 def basePath = "/Volumes/Builds/BuildsTmp"
+                 def folderName = params.GAMENAME
+                 def folderPath = "${basePath}/${folderName}"
+                 def oldFolderPath = "${folderPath}_old"
+
+                 echo "Renaming folder to release lock: ${folderPath}"
+                 sh """
+                     set +e
+
+                     if [ -d '${folderPath}' ]; then
+                         mv '${folderPath}' '${oldFolderPath}'
+                         (
+                             sleep 2
+                             rm -rf '${oldFolderPath}'
+                         ) &
+                     else
+                        echo "Folder does not exist: ${folderPath}"
+                     fi
+
+                     exit 0
+
+                 """
+
+                 cleanWs()
+
+
+
+                 // echo "Deleting folder: ${folderPath}"
+                 // sh "rm -rf '${folderPath}'"
+                 // cleanWs()
+                
+
+            }
+        }
+
+        failure {
+             script {
+                 def specificRecipient = ['nipuni.gunatilake@kwalee.com']
+                 def dynamicRecipients = [params.COMMITTER_EMAIL, params.BUILD_USER_EMAIL].findAll { it && it.trim() }.unique()
+                 def allRecipientsList = (dynamicRecipients + specificRecipient).unique()
+                 def recipients = allRecipientsList.join(',')
+
+                 if (!recipients) {
+                     echo "No valid email recipients found for failure notification."
+                     return
+                 }
+
+                 def subject = "Test Automation FAILED for ${params.GAMENAME} (Upstream Build #${params.UPSTREAM_BUILD_NUMBER}, Version: ${params.VERSION})"
+                 def body = """
+                 <html><body>
+                 <h2>Test Automation FAILED</h2>
+                 <p>Game: <b>${params.GAMENAME}</b></p>
+                 <p>Version: <b>${params.VERSION}</b></p>
+                 <p>Failed Stage: ${LAST_STAGE}</p>
+                 <p>Triggered by: ${params.UPSTREAM_JOB_NAME} #${params.UPSTREAM_BUILD_NUMBER}</p>
+                 <p>Jenkins Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                 """
+
+                 def sourceZipPath = "/Volumes/Builds/BuildsTmp/${params.GAMENAME}/queenspuzzle/AutomationReports.zip"
+                 def attachmentFilename = "AutomationReports-${params.GAMENAME}-${params.UPSTREAM_BUILD_NUMBER}.zip"
+                 def workspaceZipPath = "${env.WORKSPACE}/${attachmentFilename}"
+
+                 echo "Attempting to send failure email to: ${recipients}"
+                 echo "Checking for attachment (partial results) at: ${sourceZipPath}"
+
+                 if (fileExists(sourceZipPath)) {
+                     try {
+                         echo "Copying attachment from ${sourceZipPath} to workspace path ${workspaceZipPath}"
+                         sh "cp '${sourceZipPath}' '${workspaceZipPath}'"
+
+                         body += "<br/><p>Attempting to attach partial results zip file.</p></body></html>"
+                         emailext(
+                             to: recipients,
+                             subject: subject,
+                             body: body,
+                             mimeType: 'text/html',
+                             attachmentsPattern: attachmentFilename
+                         )
+                         echo "Failure email sent with attachment."
+
+                         echo "Removing temporary attachment copy from workspace: ${workspaceZipPath}"
+                         sh "rm -f '${workspaceZipPath}'"
+                     } catch (e) {
+                         echo "ERROR: Failed to copy attachment to workspace on failure: ${e.message}"
+                         body += "<br/><p>Failed to copy attachment to workspace. No results attached.</p></body></html>"
+                         emailext( to: recipients, subject: subject, body: body, mimeType: 'text/html' )
+                     }
+                 } else {
+                     body += "<br/><p>No results zip file found to attach.</p></body></html>"
+                     echo "WARN: Automation reports zip not found at ${sourceZipPath}. Sending failure email without attachment."
+                     emailext( to: recipients, subject: subject, body: body, mimeType: 'text/html' )
+                 }
+
+                 // Cleanup after email is sent
+                 def folderPath = "/Volumes/Builds/BuildsTmp/${params.GAMENAME}"
+                 echo "Deleting folder: ${folderPath}"
+                 sh "rm -rf '${folderPath}'"
+                 cleanWs()
+             }
+         }
+     }
+}
